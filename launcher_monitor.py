@@ -1,108 +1,29 @@
-# ============================================================
-# ROBINHOOD RADAR
-# LAUNCHER MONITOR - HOOD.FUN API FINAL
-# ============================================================
-#
-# Kaynak:
-#   https://hood.fun/api/board
-#
-# Akış:
-#
-#   hood.fun/api/board
-#          ↓
-#   yeni token kontrolü
-#          ↓
-#   name + symbol
-#          ↓
-#   callback(new_token)
-#          ↓
-#   Patoshi / keyword / creator filtreleri
-#          ↓
-#   Telegram
-#
-# ÖNEMLİ:
-# - Alchemy RPC KULLANMAZ
-# - RPC_URL KULLANMAZ
-# - Blockchain polling KULLANMAZ
-# - Alchemy kredisi harcamaz
-#
-# ============================================================
-
-import json
-import os
-import threading
 import time
-
 import requests
 
-
-# ============================================================
-# AYARLAR
-# ============================================================
-
-BOARD_URL = os.getenv(
-    "HOOD_BOARD_URL",
-    "https://hood.fun/api/board"
-).strip()
-
-POLL_SECONDS = int(
-    os.getenv("HOOD_POLL_SECONDS", "5")
-)
-
-HTTP_TIMEOUT = int(
-    os.getenv("HOOD_HTTP_TIMEOUT", "10")
-)
+from config import POLL_SECONDS
+from filters import find_keyword_matches
 
 
-# ============================================================
-# DURUM
-# ============================================================
+BOARD_URL = "https://hood.fun/api/board"
 
-_running = False
-_thread = None
-
-_callback = None
-
-_seen_addresses = set()
-_seen_lock = threading.Lock()
+REQUEST_TIMEOUT = 10
+RETRY_SECONDS = 5
 
 
-# ============================================================
-# LOG
-# ============================================================
+class LauncherMonitor:
 
-def log(message):
-    print(message, flush=True)
+    def __init__(self, on_match):
+        self.on_match = on_match
+        self.seen_tokens = set()
 
-
-# ============================================================
-# CALLBACK
-# ============================================================
-
-def set_callback(callback):
-    global _callback
-
-    _callback = callback
-
-    log(
-        "🧩 HOOD.FUN CALLBACK HAZIR."
-    )
-
-
-# ============================================================
-# HTTP
-# ============================================================
-
-def _fetch_board():
-    try:
+    def _fetch_board(self):
         response = requests.get(
             BOARD_URL,
-            timeout=HTTP_TIMEOUT,
+            timeout=REQUEST_TIMEOUT,
             headers={
+                "User-Agent": "Robinhood-Radar/1.0",
                 "Accept": "application/json",
-                "User-Agent": (
-                    "Robinhood-Radar/1.0"
-                ),
             },
         )
 
@@ -111,388 +32,182 @@ def _fetch_board():
         data = response.json()
 
         if not isinstance(data, dict):
-            log(
-                "⚠️ HOOD.FUN API beklenmeyen cevap."
-            )
-            return []
+            raise ValueError("Hood API beklenmeyen veri döndürdü.")
 
-        tokens = data.get("tokens")
+        tokens = data.get("tokens", [])
 
         if not isinstance(tokens, list):
-            log(
-                "⚠️ HOOD.FUN API 'tokens' alanı bulunamadı."
-            )
-            return []
+            raise ValueError("Hood API 'tokens' listesi bulunamadı.")
 
         return tokens
 
-    except requests.RequestException as exc:
-        log(
-            f"⚠️ HOOD.FUN HTTP HATASI => {exc}"
+    def _normalize_token(self, token):
+        address = token.get("address", "")
+        creator = token.get("creator", "")
+        launchpad = token.get("launchpad", "")
+
+        name = token.get("name", "") or ""
+        symbol = token.get("symbol", "") or ""
+
+        created_at_block = token.get("createdAtBlock", "")
+
+        return {
+            "token": address,
+            "creator": creator,
+            "launch": launchpad,
+            "name": name,
+            "symbol": symbol,
+            "metadataURI": token.get("metadataURI", ""),
+            "imageURI": "",
+            "block": created_at_block,
+            "tx_hash": "",
+        }
+
+    def _token_id(self, token):
+        return (
+            token.get("address")
+            or f"{token.get('name', '')}:{token.get('symbol', '')}:"
+            f"{token.get('createdAtBlock', '')}"
         )
-        return []
 
-    except ValueError as exc:
-        log(
-            f"⚠️ HOOD.FUN JSON HATASI => {exc}"
+    def connect_check(self):
+        print("Hood.fun API kontrol ediliyor...")
+
+        tokens = self._fetch_board()
+
+        print(
+            f"Hood.fun API baglandi | "
+            f"endpoint={BOARD_URL} | "
+            f"tokens={len(tokens)}"
         )
-        return []
 
-    except Exception as exc:
-        log(
-            f"❌ HOOD.FUN API HATASI => {exc}"
+        print(
+            f"Polling: {POLL_SECONDS}s | "
+            f"Kaynak: Hood.fun /api/board"
         )
-        return []
 
+    def _initial_snapshot(self, tokens):
+        """
+        Radar ilk açıldığında mevcut coinleri alarm olarak göndermez.
+        Sadece mevcut listeyi hafızaya alır.
+        Böylece restart sonrası eski coinlerden Telegram spam'i oluşmaz.
+        """
 
-# ============================================================
-# TOKEN NORMALIZE
-# ============================================================
+        for token in tokens:
+            token_id = self._token_id(token)
 
-def _normalize_token(item):
-    if not isinstance(item, dict):
-        return None
+            if token_id:
+                self.seen_tokens.add(token_id)
 
-    address = str(
-        item.get("address", "")
-    ).strip()
-
-    if not address:
-        return None
-
-    name = str(
-        item.get("name", "")
-    ).strip()
-
-    symbol = str(
-        item.get("symbol", "")
-    ).strip()
-
-    creator = str(
-        item.get("creator", "")
-    ).strip()
-
-    launchpad = str(
-        item.get("launchpad", "")
-    ).strip()
-
-    timestamp = item.get(
-        "timestamp"
-    )
-
-    created_at_block = item.get(
-        "createdAtBlock"
-    )
-
-    curve = item.get(
-        "curve"
-    )
-
-    if not isinstance(curve, dict):
-        curve = {}
-
-    virtual_eth = curve.get(
-        "virtualEth"
-    )
-
-    real_eth = curve.get(
-        "realEth"
-    )
-
-    graduated = bool(
-        curve.get(
-            "graduated",
-            False
+        print(
+            f"Ilk snapshot alindi | "
+            f"Mevcut token={len(self.seen_tokens)}"
         )
-    )
 
-    migrated = bool(
-        curve.get(
-            "migrated",
-            False
-        )
-    )
+    def _process_tokens(self, tokens):
+        new_count = 0
+        match_count = 0
 
-    # --------------------------------------------------------
-    # Patoshi Radar / mevcut app.py uyumluluğu
-    # --------------------------------------------------------
-    #
-    # app.py şu alanları bekliyor:
-    #
-    # mint
-    # traderPublicKey
-    # name
-    # symbol
-    # marketCapSol
-    #
-    # Robinhood Chain tarafında bunların karşılığı:
-    #
-    # address  -> mint
-    # creator  -> traderPublicKey
-    #
-    # --------------------------------------------------------
+        for raw_token in tokens:
 
-    normalized = {
-        "mint": address,
-        "traderPublicKey": creator,
+            token_id = self._token_id(raw_token)
 
-        "name": name or "Bilinmiyor",
-        "symbol": symbol or "-",
-
-        # Board şu anda doğrudan SOL market cap
-        # vermiyor.
-        "marketCapSol": 0,
-
-        # Robinhood'a özgü bilgiler
-        "marketCapEth": None,
-
-        "address": address,
-        "creator": creator,
-        "launchpad": launchpad,
-
-        "timestamp": timestamp,
-        "createdAtBlock": created_at_block,
-
-        "virtualEth": virtual_eth,
-        "realEth": real_eth,
-
-        "graduated": graduated,
-        "migrated": migrated,
-
-        # Kaynağın tamamını kaybetmeyelim.
-        "hood_raw": item,
-    }
-
-    return normalized
-
-
-# ============================================================
-# YENİ TOKEN KONTROLÜ
-# ============================================================
-
-def _process_tokens(tokens):
-    new_count = 0
-
-    for item in tokens:
-
-        token = _normalize_token(item)
-
-        if not token:
-            continue
-
-        address = token["mint"]
-
-        with _seen_lock:
-
-            if address in _seen_addresses:
+            if not token_id:
                 continue
 
-            _seen_addresses.add(address)
+            # Daha önce gördüysek tekrar işleme.
+            if token_id in self.seen_tokens:
+                continue
 
-        new_count += 1
+            self.seen_tokens.add(token_id)
+            new_count += 1
 
-        name = token.get(
-            "name",
-            "Bilinmiyor"
-        )
+            launch = self._normalize_token(raw_token)
 
-        symbol = token.get(
-            "symbol",
-            "-"
-        )
+            matches = find_keyword_matches(
+                launch["name"],
+                launch["symbol"],
+            )
 
-        log(
-            "🆕 HOOD.FUN TOKEN => "
-            f"{name} ({symbol}) | {address}"
-        )
+            print(
+                f"Yeni coin | "
+                f"{launch['name']} "
+                f"({launch['symbol']}) | "
+                f"token={launch['token']}"
+            )
 
-        # ----------------------------------------------------
-        # Callback
-        # ----------------------------------------------------
+            if matches:
+                match_count += 1
 
-        if _callback:
-
-            try:
-                _callback(token)
-
-            except Exception as exc:
-
-                log(
-                    "❌ HOOD.FUN CALLBACK HATASI => "
-                    f"{exc}"
+                print(
+                    f"KEYWORD MATCH | "
+                    f"{launch['name']} "
+                    f"({launch['symbol']}) | "
+                    f"{matches}"
                 )
 
-                # Callback hatası bütün radarın
-                # durmasına sebep olmasın.
+                self.on_match(
+                    launch,
+                    matches,
+                )
 
-    return new_count
+        return new_count, match_count
 
+    def run(self):
 
-# ============================================================
-# POLLING LOOP
-# ============================================================
+        self.connect_check()
 
-def _worker():
+        # İlk listeyi al.
+        tokens = self._fetch_board()
 
-    global _running
+        self._initial_snapshot(tokens)
 
-    log(
-        "🌐 HOOD.FUN BOARD MONITOR BAŞLADI."
-    )
+        print("=" * 60)
+        print("ROBINHOOD RADAR AKTIF")
+        print("Kaynak: Hood.fun /api/board")
+        print("Alchemy/RPC polling: DISABLED")
+        print("LaunchCreated event polling: DISABLED")
+        print("=" * 60)
 
-    log(
-        f"📡 Kaynak: {BOARD_URL}"
-    )
+        while True:
 
-    log(
-        f"⏱ Polling: {POLL_SECONDS}s"
-    )
+            try:
 
-    log(
-        "💳 Alchemy: KULLANILMIYOR"
-    )
+                tokens = self._fetch_board()
 
-    # --------------------------------------------------------
-    # İlk çekim
-    #
-    # İlk çalıştırmada board'daki mevcut tokenların tamamını
-    # yeni token olarak Telegram'a göndermemek için sadece
-    # cache'e alıyoruz.
-    # --------------------------------------------------------
-
-    initial_tokens = _fetch_board()
-
-    initial_count = 0
-
-    for item in initial_tokens:
-
-        token = _normalize_token(item)
-
-        if not token:
-            continue
-
-        address = token["mint"]
-
-        with _seen_lock:
-            _seen_addresses.add(address)
-
-        initial_count += 1
-
-    log(
-        f"📦 İlk board senkronizasyonu: "
-        f"{initial_count} token"
-    )
-
-    # --------------------------------------------------------
-    # Sürekli takip
-    # --------------------------------------------------------
-
-    while _running:
-
-        try:
-
-            tokens = _fetch_board()
-
-            if tokens:
-
-                new_count = _process_tokens(
+                new_count, match_count = self._process_tokens(
                     tokens
                 )
 
-                if new_count:
-                    log(
-                        f"📥 Yeni token: "
-                        f"{new_count}"
-                    )
+                print(
+                    f"Board tarandi | "
+                    f"tokens={len(tokens)} | "
+                    f"yeni={new_count} | "
+                    f"match={match_count}"
+                )
 
-        except Exception as exc:
+                time.sleep(POLL_SECONDS)
 
-            log(
-                f"❌ HOOD.FUN POLLING HATASI => "
-                f"{exc}"
-            )
+            except requests.RequestException as exc:
 
-        time.sleep(
-            POLL_SECONDS
-        )
+                print(
+                    f"Hood API hatasi: {exc}"
+                )
 
+                time.sleep(RETRY_SECONDS)
 
-# ============================================================
-# START
-# ============================================================
+            except ValueError as exc:
 
-def start():
+                print(
+                    f"Board veri hatasi: {exc}"
+                )
 
-    global _running
-    global _thread
+                time.sleep(RETRY_SECONDS)
 
-    if _running:
-        log(
-            "⚠️ HOOD.FUN MONITOR zaten çalışıyor."
-        )
-        return
+            except Exception as exc:
 
-    _running = True
+                print(
+                    f"Monitor hatasi: {exc}"
+                )
 
-    _thread = threading.Thread(
-        target=_worker,
-        daemon=True,
-        name="HoodBoardMonitor",
-    )
-
-    _thread.start()
-
-
-# ============================================================
-# STOP
-# ============================================================
-
-def stop():
-
-    global _running
-    global _thread
-
-    _running = False
-
-    if _thread:
-        _thread.join(
-            timeout=2
-        )
-
-    _thread = None
-
-    log(
-        "🛑 HOOD.FUN MONITOR durduruldu."
-    )
-
-
-# ============================================================
-# TEST
-# ============================================================
-
-if __name__ == "__main__":
-
-    def test_callback(data):
-
-        print(
-            json.dumps(
-                data,
-                indent=2,
-                ensure_ascii=False
-            )
-        )
-
-    set_callback(
-        test_callback
-    )
-
-    start()
-
-    try:
-
-        while True:
-            time.sleep(1)
-
-    except KeyboardInterrupt:
-
-        stop()
+                time.sleep(RETRY_SECONDS)
