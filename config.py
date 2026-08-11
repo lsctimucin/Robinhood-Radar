@@ -1,41 +1,51 @@
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
-# ==============================
+# ============================================================
 # TELEGRAM
-# ==============================
+# ============================================================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+CHAT_ID = os.getenv("CHAT_ID", "")
 
 
-# ==============================
+# ============================================================
+# ROBINHOOD CHAIN / RPC
+# ============================================================
+
+RPC_URL = os.getenv("RPC_URL", "")
+
+# Robinhood Chain
+CHAIN_ID = 4663
+
+# Launcher Factory
+LAUNCHER_FACTORY = os.getenv(
+    "LAUNCHER_FACTORY",
+    "0x631f9371Fd6B2C85F8f61d19A90547eE67Fa61A2"
+)
+
+
+# ============================================================
 # TARGET
-# ==============================
+# ============================================================
 
-TARGET_SYMBOL = os.getenv("TARGET_SYMBOL", "$CLOCKIN")
-
-
-# ==============================
-# ROBINHOOD CHAIN RPC
-# ==============================
-
-RPC_URL = os.getenv("RPC_URL")
+# app.py bunu import ediyor.
+# Şimdilik test amacıyla CLOCKIN.
+TARGET_SYMBOL = os.getenv("TARGET_SYMBOL", "CLOCKIN")
 
 
-# ==============================
-# LAUNCHER
-# ==============================
+# ============================================================
+# POLLING / RPC EKONOMİ
+# ============================================================
 
-LAUNCHER_FACTORY = os.getenv("LAUNCHER_FACTORY")
+# Her 5 saniyede bir yeni block kontrol edilir.
+# Yeni block'lar kaçırılmaz; bir sonraki sorguda topluca taranır.
+POLL_SECONDS = int(os.getenv("POLL_SECONDS", "5"))
 
-
-# ==============================
-# MONITOR SETTINGS
-# ==============================
-
-# RPC kullanımını ekonomik tutmak için
-POLL_SECONDS = 3
-
-# Tek sorguda maksimum taranacak blok
-BLOCK_BATCH_SIZE = 50
+# Tek get_logs çağrısında maksimum 50 block.
+# 5 saniyede bir kontrol edildiği için normal durumda
+# tek sorguda birkaç block gelir.
+BLOCK_BATCH_SIZE = int(os.getenv("BLOCK_BATCH_SIZE", "50"))
