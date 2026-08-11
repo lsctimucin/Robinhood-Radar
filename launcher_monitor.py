@@ -89,7 +89,6 @@ class LauncherMonitor:
         self.last_block = None
 
         # LaunchCreated event signature
-        # KRITIK: RPC topic mutlaka 0x ile başlamalı.
         raw_signature = Web3.keccak(
             text=(
                 "LaunchCreated("
@@ -99,6 +98,7 @@ class LauncherMonitor:
             )
         ).hex()
 
+        # RPC topic mutlaka 0x ile baslamali
         if not raw_signature.startswith("0x"):
             raw_signature = "0x" + raw_signature
 
@@ -130,6 +130,11 @@ class LauncherMonitor:
 
         print(
             f"LaunchCreated topic: {self.event_signature}"
+        )
+
+        print(
+            f"Polling: {POLL_SECONDS}s | "
+            f"Batch: {BLOCK_BATCH_SIZE} blocks"
         )
 
         print("LaunchCreated dinleniyor...")
@@ -215,8 +220,7 @@ class LauncherMonitor:
 
                         if matches:
                             print(
-                                f"KEYWORD MATCH | "
-                                f"{matches}"
+                                f"KEYWORD MATCH | {matches}"
                             )
 
                             self.on_match(
