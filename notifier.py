@@ -22,7 +22,7 @@ def build_message(launch, matches):
         f"🌐 Robinhood Chain\n"
         f"🏭 Platform: {platform}\n"
         f"🔎 Keyword: {', '.join(matches)}\n\n"
-        f"📜 Token: {token}\n"
+        f"📜 Token: `{token}`\n"
         f"🚀 Launch: {launch_address}\n"
         f"👤 Creator: {creator}\n"
         f"🔗 TX: "
