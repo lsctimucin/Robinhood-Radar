@@ -1,253 +1,498 @@
+# ============================================================
+# ROBINHOOD RADAR
+# LAUNCHER MONITOR - HOOD.FUN API FINAL
+# ============================================================
+#
+# Kaynak:
+#   https://hood.fun/api/board
+#
+# Akış:
+#
+#   hood.fun/api/board
+#          ↓
+#   yeni token kontrolü
+#          ↓
+#   name + symbol
+#          ↓
+#   callback(new_token)
+#          ↓
+#   Patoshi / keyword / creator filtreleri
+#          ↓
+#   Telegram
+#
+# ÖNEMLİ:
+# - Alchemy RPC KULLANMAZ
+# - RPC_URL KULLANMAZ
+# - Blockchain polling KULLANMAZ
+# - Alchemy kredisi harcamaz
+#
+# ============================================================
+
+import json
+import os
+import threading
 import time
 
-from web3 import Web3
-from web3.exceptions import Web3Exception
+import requests
 
-from config import (
-    RPC_URL,
-    LAUNCHER_FACTORY,
-    POLL_SECONDS,
-    BLOCK_BATCH_SIZE,
+
+# ============================================================
+# AYARLAR
+# ============================================================
+
+BOARD_URL = os.getenv(
+    "HOOD_BOARD_URL",
+    "https://hood.fun/api/board"
+).strip()
+
+POLL_SECONDS = int(
+    os.getenv("HOOD_POLL_SECONDS", "5")
 )
 
-from filters import find_keyword_matches
+HTTP_TIMEOUT = int(
+    os.getenv("HOOD_HTTP_TIMEOUT", "10")
+)
 
 
-LAUNCH_CREATED_ABI = [
-    {
-        "anonymous": False,
-        "inputs": [
-            {
-                "indexed": True,
-                "internalType": "address",
-                "name": "creator",
-                "type": "address",
+# ============================================================
+# DURUM
+# ============================================================
+
+_running = False
+_thread = None
+
+_callback = None
+
+_seen_addresses = set()
+_seen_lock = threading.Lock()
+
+
+# ============================================================
+# LOG
+# ============================================================
+
+def log(message):
+    print(message, flush=True)
+
+
+# ============================================================
+# CALLBACK
+# ============================================================
+
+def set_callback(callback):
+    global _callback
+
+    _callback = callback
+
+    log(
+        "🧩 HOOD.FUN CALLBACK HAZIR."
+    )
+
+
+# ============================================================
+# HTTP
+# ============================================================
+
+def _fetch_board():
+    try:
+        response = requests.get(
+            BOARD_URL,
+            timeout=HTTP_TIMEOUT,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": (
+                    "Robinhood-Radar/1.0"
+                ),
             },
-            {
-                "indexed": False,
-                "internalType": "address",
-                "name": "token",
-                "type": "address",
-            },
-            {
-                "indexed": False,
-                "internalType": "address",
-                "name": "launch",
-                "type": "address",
-            },
-            {
-                "indexed": False,
-                "internalType": "string",
-                "name": "name",
-                "type": "string",
-            },
-            {
-                "indexed": False,
-                "internalType": "string",
-                "name": "symbol",
-                "type": "string",
-            },
-            {
-                "indexed": False,
-                "internalType": "string",
-                "name": "metadataURI",
-                "type": "string",
-            },
-            {
-                "indexed": False,
-                "internalType": "string",
-                "name": "imageURI",
-                "type": "string",
-            },
-        ],
-        "name": "LaunchCreated",
-        "type": "event",
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        if not isinstance(data, dict):
+            log(
+                "⚠️ HOOD.FUN API beklenmeyen cevap."
+            )
+            return []
+
+        tokens = data.get("tokens")
+
+        if not isinstance(tokens, list):
+            log(
+                "⚠️ HOOD.FUN API 'tokens' alanı bulunamadı."
+            )
+            return []
+
+        return tokens
+
+    except requests.RequestException as exc:
+        log(
+            f"⚠️ HOOD.FUN HTTP HATASI => {exc}"
+        )
+        return []
+
+    except ValueError as exc:
+        log(
+            f"⚠️ HOOD.FUN JSON HATASI => {exc}"
+        )
+        return []
+
+    except Exception as exc:
+        log(
+            f"❌ HOOD.FUN API HATASI => {exc}"
+        )
+        return []
+
+
+# ============================================================
+# TOKEN NORMALIZE
+# ============================================================
+
+def _normalize_token(item):
+    if not isinstance(item, dict):
+        return None
+
+    address = str(
+        item.get("address", "")
+    ).strip()
+
+    if not address:
+        return None
+
+    name = str(
+        item.get("name", "")
+    ).strip()
+
+    symbol = str(
+        item.get("symbol", "")
+    ).strip()
+
+    creator = str(
+        item.get("creator", "")
+    ).strip()
+
+    launchpad = str(
+        item.get("launchpad", "")
+    ).strip()
+
+    timestamp = item.get(
+        "timestamp"
+    )
+
+    created_at_block = item.get(
+        "createdAtBlock"
+    )
+
+    curve = item.get(
+        "curve"
+    )
+
+    if not isinstance(curve, dict):
+        curve = {}
+
+    virtual_eth = curve.get(
+        "virtualEth"
+    )
+
+    real_eth = curve.get(
+        "realEth"
+    )
+
+    graduated = bool(
+        curve.get(
+            "graduated",
+            False
+        )
+    )
+
+    migrated = bool(
+        curve.get(
+            "migrated",
+            False
+        )
+    )
+
+    # --------------------------------------------------------
+    # Patoshi Radar / mevcut app.py uyumluluğu
+    # --------------------------------------------------------
+    #
+    # app.py şu alanları bekliyor:
+    #
+    # mint
+    # traderPublicKey
+    # name
+    # symbol
+    # marketCapSol
+    #
+    # Robinhood Chain tarafında bunların karşılığı:
+    #
+    # address  -> mint
+    # creator  -> traderPublicKey
+    #
+    # --------------------------------------------------------
+
+    normalized = {
+        "mint": address,
+        "traderPublicKey": creator,
+
+        "name": name or "Bilinmiyor",
+        "symbol": symbol or "-",
+
+        # Board şu anda doğrudan SOL market cap
+        # vermiyor.
+        "marketCapSol": 0,
+
+        # Robinhood'a özgü bilgiler
+        "marketCapEth": None,
+
+        "address": address,
+        "creator": creator,
+        "launchpad": launchpad,
+
+        "timestamp": timestamp,
+        "createdAtBlock": created_at_block,
+
+        "virtualEth": virtual_eth,
+        "realEth": real_eth,
+
+        "graduated": graduated,
+        "migrated": migrated,
+
+        # Kaynağın tamamını kaybetmeyelim.
+        "hood_raw": item,
     }
-]
+
+    return normalized
 
 
-class LauncherMonitor:
+# ============================================================
+# YENİ TOKEN KONTROLÜ
+# ============================================================
 
-    def __init__(self, on_match):
-        self.w3 = Web3(
-            Web3.HTTPProvider(
-                RPC_URL,
-                request_kwargs={"timeout": 10},
-            )
+def _process_tokens(tokens):
+    new_count = 0
+
+    for item in tokens:
+
+        token = _normalize_token(item)
+
+        if not token:
+            continue
+
+        address = token["mint"]
+
+        with _seen_lock:
+
+            if address in _seen_addresses:
+                continue
+
+            _seen_addresses.add(address)
+
+        new_count += 1
+
+        name = token.get(
+            "name",
+            "Bilinmiyor"
         )
 
-        self.factory_address = Web3.to_checksum_address(
-            LAUNCHER_FACTORY
+        symbol = token.get(
+            "symbol",
+            "-"
         )
 
-        self.factory = self.w3.eth.contract(
-            address=self.factory_address,
-            abi=LAUNCH_CREATED_ABI,
+        log(
+            "🆕 HOOD.FUN TOKEN => "
+            f"{name} ({symbol}) | {address}"
         )
 
-        self.on_match = on_match
-        self.last_block = None
+        # ----------------------------------------------------
+        # Callback
+        # ----------------------------------------------------
 
-        # LaunchCreated event signature
-        raw_signature = Web3.keccak(
-            text=(
-                "LaunchCreated("
-                "address,address,address,"
-                "string,string,string,string"
-                ")"
-            )
-        ).hex()
+        if _callback:
 
-        # RPC topic mutlaka 0x ile baslamali
-        if not raw_signature.startswith("0x"):
-            raw_signature = "0x" + raw_signature
-
-        self.event_signature = raw_signature
-
-    def connect_check(self):
-        if not self.w3.is_connected():
-            raise RuntimeError(
-                f"Robinhood RPC baglanamadi: {RPC_URL}"
-            )
-
-        chain_id = self.w3.eth.chain_id
-
-        if chain_id != 4663:
-            raise RuntimeError(
-                f"Yanlis chain ID: {chain_id}, beklenen: 4663"
-            )
-
-        latest = self.w3.eth.block_number
-
-        print(
-            f"Robinhood Chain baglandi | "
-            f"chain_id={chain_id} | block={latest}"
-        )
-
-        print(
-            f"Launcher Factory: {LAUNCHER_FACTORY}"
-        )
-
-        print(
-            f"LaunchCreated topic: {self.event_signature}"
-        )
-
-        print(
-            f"Polling: {POLL_SECONDS}s | "
-            f"Batch: {BLOCK_BATCH_SIZE} blocks"
-        )
-
-        print("LaunchCreated dinleniyor...")
-
-    def _get_logs(self, from_block, to_block):
-        return self.w3.eth.get_logs(
-            {
-                "address": self.factory_address,
-                "topics": [self.event_signature],
-                "fromBlock": from_block,
-                "toBlock": to_block,
-            }
-        )
-
-    def _decode(self, raw_log):
-        event = self.factory.events.LaunchCreated().process_log(
-            raw_log
-        )
-
-        args = event["args"]
-
-        return {
-            "creator": args["creator"],
-            "token": args["token"],
-            "launch": args["launch"],
-            "name": args["name"],
-            "symbol": args["symbol"],
-            "metadataURI": args["metadataURI"],
-            "imageURI": args["imageURI"],
-            "block": raw_log["blockNumber"],
-            "tx_hash": raw_log["transactionHash"].hex(),
-        }
-
-    def run(self):
-        self.connect_check()
-
-        self.last_block = self.w3.eth.block_number
-
-        print(
-            f"Baslangic block: {self.last_block}"
-        )
-
-        while True:
             try:
-                latest = self.w3.eth.block_number
-
-                if latest > self.last_block:
-
-                    start = self.last_block + 1
-
-                    end = min(
-                        start + BLOCK_BATCH_SIZE - 1,
-                        latest,
-                    )
-
-                    logs = self._get_logs(
-                        start,
-                        end,
-                    )
-
-                    print(
-                        f"Block taraniyor: "
-                        f"{start} -> {end} | "
-                        f"LaunchCreated={len(logs)}"
-                    )
-
-                    for raw_log in logs:
-
-                        launch = self._decode(raw_log)
-
-                        matches = find_keyword_matches(
-                            launch["name"],
-                            launch["symbol"],
-                        )
-
-                        print(
-                            f"LaunchCreated | "
-                            f"{launch['name']} "
-                            f"({launch['symbol']}) | "
-                            f"token={launch['token']} | "
-                            f"block={launch['block']}"
-                        )
-
-                        if matches:
-                            print(
-                                f"KEYWORD MATCH | {matches}"
-                            )
-
-                            self.on_match(
-                                launch,
-                                matches,
-                            )
-
-                    self.last_block = end
-
-                time.sleep(POLL_SECONDS)
-
-            except (
-                Web3Exception,
-                ValueError,
-                ConnectionError,
-            ) as exc:
-
-                print(
-                    f"RPC/log hatasi: {exc}"
-                )
-
-                time.sleep(5)
+                _callback(token)
 
             except Exception as exc:
 
-                print(
-                    f"Monitor hatasi: {exc}"
+                log(
+                    "❌ HOOD.FUN CALLBACK HATASI => "
+                    f"{exc}"
                 )
 
-                time.sleep(5)
+                # Callback hatası bütün radarın
+                # durmasına sebep olmasın.
+
+    return new_count
+
+
+# ============================================================
+# POLLING LOOP
+# ============================================================
+
+def _worker():
+
+    global _running
+
+    log(
+        "🌐 HOOD.FUN BOARD MONITOR BAŞLADI."
+    )
+
+    log(
+        f"📡 Kaynak: {BOARD_URL}"
+    )
+
+    log(
+        f"⏱ Polling: {POLL_SECONDS}s"
+    )
+
+    log(
+        "💳 Alchemy: KULLANILMIYOR"
+    )
+
+    # --------------------------------------------------------
+    # İlk çekim
+    #
+    # İlk çalıştırmada board'daki mevcut tokenların tamamını
+    # yeni token olarak Telegram'a göndermemek için sadece
+    # cache'e alıyoruz.
+    # --------------------------------------------------------
+
+    initial_tokens = _fetch_board()
+
+    initial_count = 0
+
+    for item in initial_tokens:
+
+        token = _normalize_token(item)
+
+        if not token:
+            continue
+
+        address = token["mint"]
+
+        with _seen_lock:
+            _seen_addresses.add(address)
+
+        initial_count += 1
+
+    log(
+        f"📦 İlk board senkronizasyonu: "
+        f"{initial_count} token"
+    )
+
+    # --------------------------------------------------------
+    # Sürekli takip
+    # --------------------------------------------------------
+
+    while _running:
+
+        try:
+
+            tokens = _fetch_board()
+
+            if tokens:
+
+                new_count = _process_tokens(
+                    tokens
+                )
+
+                if new_count:
+                    log(
+                        f"📥 Yeni token: "
+                        f"{new_count}"
+                    )
+
+        except Exception as exc:
+
+            log(
+                f"❌ HOOD.FUN POLLING HATASI => "
+                f"{exc}"
+            )
+
+        time.sleep(
+            POLL_SECONDS
+        )
+
+
+# ============================================================
+# START
+# ============================================================
+
+def start():
+
+    global _running
+    global _thread
+
+    if _running:
+        log(
+            "⚠️ HOOD.FUN MONITOR zaten çalışıyor."
+        )
+        return
+
+    _running = True
+
+    _thread = threading.Thread(
+        target=_worker,
+        daemon=True,
+        name="HoodBoardMonitor",
+    )
+
+    _thread.start()
+
+
+# ============================================================
+# STOP
+# ============================================================
+
+def stop():
+
+    global _running
+    global _thread
+
+    _running = False
+
+    if _thread:
+        _thread.join(
+            timeout=2
+        )
+
+    _thread = None
+
+    log(
+        "🛑 HOOD.FUN MONITOR durduruldu."
+    )
+
+
+# ============================================================
+# TEST
+# ============================================================
+
+if __name__ == "__main__":
+
+    def test_callback(data):
+
+        print(
+            json.dumps(
+                data,
+                indent=2,
+                ensure_ascii=False
+            )
+        )
+
+    set_callback(
+        test_callback
+    )
+
+    start()
+
+    try:
+
+        while True:
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+
+        stop()
