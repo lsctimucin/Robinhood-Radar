@@ -3,6 +3,7 @@ KEYWORDS = [
     "clock",
     "clo",
     "clockin",
+    "a"
 ]
 
 def find_keyword_matches(name: str, symbol: str):
