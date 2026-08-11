@@ -10,6 +10,13 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 
 # ==============================
+# TARGET
+# ==============================
+
+TARGET_SYMBOL = os.getenv("TARGET_SYMBOL", "$CLOCKIN")
+
+
+# ==============================
 # ROBINHOOD CHAIN RPC
 # ==============================
 
@@ -27,8 +34,8 @@ LAUNCHER_FACTORY = os.getenv("LAUNCHER_FACTORY")
 # MONITOR SETTINGS
 # ==============================
 
-# Alchemy RPC kullanımını ekonomik tutmak için
+# RPC kullanımını ekonomik tutmak için
 POLL_SECONDS = 3
 
-# Bir RPC log sorgusunda taranacak maksimum blok
+# Tek sorguda maksimum taranacak blok
 BLOCK_BATCH_SIZE = 50
