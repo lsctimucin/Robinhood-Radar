@@ -3,6 +3,7 @@ from telegram_sender import TelegramSender
 from notifier import make_notifier
 from launcher_monitor import LauncherMonitor
 
+
 def main():
     print("=" * 60)
     print("ROBINHOOD RADAR")
@@ -16,6 +17,7 @@ def main():
 
     monitor = LauncherMonitor(notifier)
     monitor.run()
+
 
 if __name__ == "__main__":
     main()
