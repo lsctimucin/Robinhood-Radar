@@ -32,46 +32,112 @@ class LauncherMonitor:
         data = response.json()
 
         if not isinstance(data, dict):
-            raise ValueError("Hood API beklenmeyen veri döndürdü.")
+            raise ValueError(
+                "Hood API beklenmeyen veri döndürdü."
+            )
 
         tokens = data.get("tokens", [])
 
         if not isinstance(tokens, list):
-            raise ValueError("Hood API 'tokens' listesi bulunamadı.")
+            raise ValueError(
+                "Hood API 'tokens' listesi bulunamadı."
+            )
 
         return tokens
 
+    def _detect_platform(self, launchpad):
+        """
+        Launchpad alanından platformu belirler.
+
+        Önemli:
+        Bu monitorün veri kaynağı hood.fun API olduğu için
+        bilinmeyen launchpadleri otomatik olarak hood.fun
+        kabul etmiyoruz.
+        """
+
+        value = str(
+            launchpad or ""
+        ).strip().lower()
+
+        if not value:
+            return "UNKNOWN"
+
+        if "hood" in value:
+            return "HOOD.FUN"
+
+        if "stonk" in value:
+            return "STONKBROKERS"
+
+        return str(launchpad)
+
     def _normalize_token(self, token):
-        address = token.get("address", "")
-        creator = token.get("creator", "")
-        launchpad = token.get("launchpad", "")
 
-        name = token.get("name", "") or ""
-        symbol = token.get("symbol", "") or ""
+        address = token.get(
+            "address",
+            ""
+        )
 
-        created_at_block = token.get("createdAtBlock", "")
+        creator = token.get(
+            "creator",
+            ""
+        )
+
+        launchpad = token.get(
+            "launchpad",
+            ""
+        )
+
+        name = token.get(
+            "name",
+            ""
+        ) or ""
+
+        symbol = token.get(
+            "symbol",
+            ""
+        ) or ""
+
+        created_at_block = token.get(
+            "createdAtBlock",
+            ""
+        )
+
+        platform = self._detect_platform(
+            launchpad
+        )
 
         return {
             "token": address,
             "creator": creator,
             "launch": launchpad,
+            "platform": platform,
             "name": name,
             "symbol": symbol,
-            "metadataURI": token.get("metadataURI", ""),
+            "metadataURI": token.get(
+                "metadataURI",
+                ""
+            ),
             "imageURI": "",
             "block": created_at_block,
             "tx_hash": "",
         }
 
     def _token_id(self, token):
+
         return (
             token.get("address")
-            or f"{token.get('name', '')}:{token.get('symbol', '')}:"
-            f"{token.get('createdAtBlock', '')}"
+            or (
+                f"{token.get('name', '')}:"
+                f"{token.get('symbol', '')}:"
+                f"{token.get('createdAtBlock', '')}"
+            )
         )
 
     def connect_check(self):
-        print("Hood.fun API kontrol ediliyor...")
+
+        print(
+            "Hood.fun API kontrol ediliyor..."
+        )
 
         tokens = self._fetch_board()
 
@@ -90,14 +156,18 @@ class LauncherMonitor:
         """
         Radar ilk açıldığında mevcut coinleri alarm olarak göndermez.
         Sadece mevcut listeyi hafızaya alır.
-        Böylece restart sonrası eski coinlerden Telegram spam'i oluşmaz.
         """
 
         for token in tokens:
-            token_id = self._token_id(token)
+
+            token_id = self._token_id(
+                token
+            )
 
             if token_id:
-                self.seen_tokens.add(token_id)
+                self.seen_tokens.add(
+                    token_id
+                )
 
         print(
             f"Ilk snapshot alindi | "
@@ -105,24 +175,31 @@ class LauncherMonitor:
         )
 
     def _process_tokens(self, tokens):
+
         new_count = 0
         match_count = 0
 
         for raw_token in tokens:
 
-            token_id = self._token_id(raw_token)
+            token_id = self._token_id(
+                raw_token
+            )
 
             if not token_id:
                 continue
 
-            # Daha önce gördüysek tekrar işleme.
             if token_id in self.seen_tokens:
                 continue
 
-            self.seen_tokens.add(token_id)
+            self.seen_tokens.add(
+                token_id
+            )
+
             new_count += 1
 
-            launch = self._normalize_token(raw_token)
+            launch = self._normalize_token(
+                raw_token
+            )
 
             matches = find_keyword_matches(
                 launch["name"],
@@ -133,16 +210,19 @@ class LauncherMonitor:
                 f"Yeni coin | "
                 f"{launch['name']} "
                 f"({launch['symbol']}) | "
+                f"platform={launch['platform']} | "
                 f"token={launch['token']}"
             )
 
             if matches:
+
                 match_count += 1
 
                 print(
                     f"KEYWORD MATCH | "
                     f"{launch['name']} "
                     f"({launch['symbol']}) | "
+                    f"platform={launch['platform']} | "
                     f"{matches}"
                 )
 
@@ -151,22 +231,37 @@ class LauncherMonitor:
                     matches,
                 )
 
-        return new_count, match_count
+        return (
+            new_count,
+            match_count
+        )
 
     def run(self):
 
         self.connect_check()
 
-        # İlk listeyi al.
         tokens = self._fetch_board()
 
-        self._initial_snapshot(tokens)
+        self._initial_snapshot(
+            tokens
+        )
 
         print("=" * 60)
-        print("ROBINHOOD RADAR AKTIF")
-        print("Kaynak: Hood.fun /api/board")
-        print("Alchemy/RPC polling: DISABLED")
-        print("LaunchCreated event polling: DISABLED")
+        print(
+            "ROBINHOOD RADAR AKTIF"
+        )
+        print(
+            "Kaynak: Hood.fun /api/board"
+        )
+        print(
+            "Platform detection: AKTIF"
+        )
+        print(
+            "Alchemy/RPC polling: DISABLED"
+        )
+        print(
+            "LaunchCreated event polling: DISABLED"
+        )
         print("=" * 60)
 
         while True:
@@ -175,7 +270,10 @@ class LauncherMonitor:
 
                 tokens = self._fetch_board()
 
-                new_count, match_count = self._process_tokens(
+                (
+                    new_count,
+                    match_count
+                ) = self._process_tokens(
                     tokens
                 )
 
@@ -186,7 +284,9 @@ class LauncherMonitor:
                     f"match={match_count}"
                 )
 
-                time.sleep(POLL_SECONDS)
+                time.sleep(
+                    POLL_SECONDS
+                )
 
             except requests.RequestException as exc:
 
@@ -194,7 +294,9 @@ class LauncherMonitor:
                     f"Hood API hatasi: {exc}"
                 )
 
-                time.sleep(RETRY_SECONDS)
+                time.sleep(
+                    RETRY_SECONDS
+                )
 
             except ValueError as exc:
 
@@ -202,7 +304,9 @@ class LauncherMonitor:
                     f"Board veri hatasi: {exc}"
                 )
 
-                time.sleep(RETRY_SECONDS)
+                time.sleep(
+                    RETRY_SECONDS
+                )
 
             except Exception as exc:
 
@@ -210,4 +314,6 @@ class LauncherMonitor:
                     f"Monitor hatasi: {exc}"
                 )
 
-                time.sleep(RETRY_SECONDS)
+                time.sleep(
+                    RETRY_SECONDS
+                )
