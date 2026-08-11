@@ -9,68 +9,71 @@ from config import (
     POLL_SECONDS,
     BLOCK_BATCH_SIZE,
 )
-
 from filters import find_keyword_matches
 
 
-LAUNCH_CREATED_ABI = [{
-    "anonymous": False,
-    "inputs": [
-        {
-            "indexed": True,
-            "internalType": "address",
-            "name": "creator",
-            "type": "address",
-        },
-        {
-            "indexed": False,
-            "internalType": "address",
-            "name": "token",
-            "type": "address",
-        },
-        {
-            "indexed": False,
-            "internalType": "address",
-            "name": "launch",
-            "type": "address",
-        },
-        {
-            "indexed": False,
-            "internalType": "string",
-            "name": "name",
-            "type": "string",
-        },
-        {
-            "indexed": False,
-            "internalType": "string",
-            "name": "symbol",
-            "type": "string",
-        },
-        {
-            "indexed": False,
-            "internalType": "string",
-            "name": "metadataURI",
-            "type": "string",
-        },
-        {
-            "indexed": False,
-            "internalType": "string",
-            "name": "imageURI",
-            "type": "string",
-        },
-    ],
-    "name": "LaunchCreated",
-    "type": "event",
-}]
+LAUNCH_CREATED_ABI = [
+    {
+        "anonymous": False,
+        "inputs": [
+            {
+                "indexed": True,
+                "internalType": "address",
+                "name": "creator",
+                "type": "address",
+            },
+            {
+                "indexed": False,
+                "internalType": "address",
+                "name": "token",
+                "type": "address",
+            },
+            {
+                "indexed": False,
+                "internalType": "address",
+                "name": "launch",
+                "type": "address",
+            },
+            {
+                "indexed": False,
+                "internalType": "string",
+                "name": "name",
+                "type": "string",
+            },
+            {
+                "indexed": False,
+                "internalType": "string",
+                "name": "symbol",
+                "type": "string",
+            },
+            {
+                "indexed": False,
+                "internalType": "string",
+                "name": "metadataURI",
+                "type": "string",
+            },
+            {
+                "indexed": False,
+                "internalType": "string",
+                "name": "imageURI",
+                "type": "string",
+            },
+        ],
+        "name": "LaunchCreated",
+        "type": "event",
+    }
+]
 
 
 class LauncherMonitor:
 
     def __init__(self, on_match):
+        self.on_match = on_match
+
         self.w3 = Web3(
             Web3.HTTPProvider(
                 RPC_URL,
-                request_kwargs={"timeout": 10},
+                request_kwargs={"timeout": 30},
             )
         )
 
@@ -79,29 +82,17 @@ class LauncherMonitor:
             abi=LAUNCH_CREATED_ABI,
         )
 
-        self.on_match = on_match
         self.last_block = None
 
-        # Robinhood RPC topic filtresi 0x prefix'i istiyor.
-        self.event_signature = (
-            "0x"
-            + Web3.keccak(
-                text=(
-                    "LaunchCreated("
-                    "address,"
-                    "address,"
-                    "address,"
-                    "string,"
-                    "string,"
-                    "string,"
-                    "string"
-                    ")"
-                )
-            ).hex()
-        )
+        self.event_signature = Web3.keccak(
+            text=(
+                "LaunchCreated("
+                "address,address,address,string,string,string,string"
+                ")"
+            )
+        ).hex()
 
     def connect_check(self):
-
         if not self.w3.is_connected():
             raise RuntimeError(
                 f"Robinhood RPC baglanamadi: {RPC_URL}"
@@ -118,42 +109,30 @@ class LauncherMonitor:
 
         print(
             f"Robinhood Chain baglandi | "
-            f"chain_id={chain_id} | "
-            f"block={latest}"
+            f"chain_id={chain_id} | block={latest}"
         )
 
         print(
             f"Launcher Factory: {LAUNCHER_FACTORY}"
         )
 
-        print(
-            f"LaunchCreated topic: {self.event_signature}"
-        )
-
-        print(
-            "LaunchCreated dinleniyor..."
-        )
+        print("LaunchCreated dinleniyor...")
 
     def _get_logs(self, from_block, to_block):
-
-        return self.w3.eth.get_logs({
-            "address": Web3.to_checksum_address(
-                LAUNCHER_FACTORY
-            ),
-            "topics": [
-                self.event_signature
-            ],
-            "fromBlock": from_block,
-            "toBlock": to_block,
-        })
+        return self.w3.eth.get_logs(
+            {
+                "address": Web3.to_checksum_address(
+                    LAUNCHER_FACTORY
+                ),
+                "topics": [self.event_signature],
+                "fromBlock": from_block,
+                "toBlock": to_block,
+            }
+        )
 
     def _decode(self, raw_log):
-
-        event = (
-            self.factory
-            .events
-            .LaunchCreated()
-            .process_log(raw_log)
+        event = self.factory.events.LaunchCreated().process_log(
+            raw_log
         )
 
         args = event["args"]
@@ -171,7 +150,6 @@ class LauncherMonitor:
         }
 
     def run(self):
-
         self.connect_check()
 
         self.last_block = self.w3.eth.block_number
@@ -181,17 +159,21 @@ class LauncherMonitor:
         )
 
         while True:
-
             try:
-
                 latest = self.w3.eth.block_number
 
                 if latest > self.last_block:
 
                     start = self.last_block + 1
 
+                    # RPC'yi yormamak için maksimum 20 blok.
+                    safe_batch_size = min(
+                        BLOCK_BATCH_SIZE,
+                        20,
+                    )
+
                     end = min(
-                        start + BLOCK_BATCH_SIZE - 1,
+                        start + safe_batch_size - 1,
                         latest,
                     )
 
@@ -221,16 +203,21 @@ class LauncherMonitor:
 
                         if matches:
 
+                            print(
+                                f"KEYWORD MATCH | "
+                                f"{matches}"
+                            )
+
                             self.on_match(
                                 launch,
                                 matches,
                             )
 
+                    # Sadece RPC isteği başarıyla tamamlandıysa
+                    # last_block ilerler.
                     self.last_block = end
 
-                time.sleep(
-                    POLL_SECONDS
-                )
+                time.sleep(POLL_SECONDS)
 
             except (
                 Web3Exception,
@@ -242,7 +229,9 @@ class LauncherMonitor:
                     f"RPC/log hatasi: {exc}"
                 )
 
-                time.sleep(3)
+                # Event kaçırmamak için last_block
+                # değiştirilmez.
+                time.sleep(5)
 
             except Exception as exc:
 
@@ -250,4 +239,4 @@ class LauncherMonitor:
                     f"Monitor hatasi: {exc}"
                 )
 
-                time.sleep(3)
+                time.sleep(5)
