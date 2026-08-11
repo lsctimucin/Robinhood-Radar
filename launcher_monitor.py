@@ -9,6 +9,7 @@ from config import (
     POLL_SECONDS,
     BLOCK_BATCH_SIZE,
 )
+
 from filters import find_keyword_matches
 
 
@@ -68,29 +69,40 @@ LAUNCH_CREATED_ABI = [
 class LauncherMonitor:
 
     def __init__(self, on_match):
-        self.on_match = on_match
-
         self.w3 = Web3(
             Web3.HTTPProvider(
                 RPC_URL,
-                request_kwargs={"timeout": 30},
+                request_kwargs={"timeout": 10},
             )
+        )
+
+        self.factory_address = Web3.to_checksum_address(
+            LAUNCHER_FACTORY
         )
 
         self.factory = self.w3.eth.contract(
-            address=Web3.to_checksum_address(LAUNCHER_FACTORY),
+            address=self.factory_address,
             abi=LAUNCH_CREATED_ABI,
         )
 
+        self.on_match = on_match
         self.last_block = None
 
-        self.event_signature = Web3.keccak(
+        # LaunchCreated event signature
+        # KRITIK: RPC topic mutlaka 0x ile başlamalı.
+        raw_signature = Web3.keccak(
             text=(
                 "LaunchCreated("
-                "address,address,address,string,string,string,string"
+                "address,address,address,"
+                "string,string,string,string"
                 ")"
             )
         ).hex()
+
+        if not raw_signature.startswith("0x"):
+            raw_signature = "0x" + raw_signature
+
+        self.event_signature = raw_signature
 
     def connect_check(self):
         if not self.w3.is_connected():
@@ -116,14 +128,16 @@ class LauncherMonitor:
             f"Launcher Factory: {LAUNCHER_FACTORY}"
         )
 
+        print(
+            f"LaunchCreated topic: {self.event_signature}"
+        )
+
         print("LaunchCreated dinleniyor...")
 
     def _get_logs(self, from_block, to_block):
         return self.w3.eth.get_logs(
             {
-                "address": Web3.to_checksum_address(
-                    LAUNCHER_FACTORY
-                ),
+                "address": self.factory_address,
                 "topics": [self.event_signature],
                 "fromBlock": from_block,
                 "toBlock": to_block,
@@ -166,14 +180,8 @@ class LauncherMonitor:
 
                     start = self.last_block + 1
 
-                    # RPC'yi yormamak için maksimum 20 blok.
-                    safe_batch_size = min(
-                        BLOCK_BATCH_SIZE,
-                        20,
-                    )
-
                     end = min(
-                        start + safe_batch_size - 1,
+                        start + BLOCK_BATCH_SIZE - 1,
                         latest,
                     )
 
@@ -182,11 +190,15 @@ class LauncherMonitor:
                         end,
                     )
 
+                    print(
+                        f"Block taraniyor: "
+                        f"{start} -> {end} | "
+                        f"LaunchCreated={len(logs)}"
+                    )
+
                     for raw_log in logs:
 
-                        launch = self._decode(
-                            raw_log
-                        )
+                        launch = self._decode(raw_log)
 
                         matches = find_keyword_matches(
                             launch["name"],
@@ -202,7 +214,6 @@ class LauncherMonitor:
                         )
 
                         if matches:
-
                             print(
                                 f"KEYWORD MATCH | "
                                 f"{matches}"
@@ -213,8 +224,6 @@ class LauncherMonitor:
                                 matches,
                             )
 
-                    # Sadece RPC isteği başarıyla tamamlandıysa
-                    # last_block ilerler.
                     self.last_block = end
 
                 time.sleep(POLL_SECONDS)
@@ -229,8 +238,6 @@ class LauncherMonitor:
                     f"RPC/log hatasi: {exc}"
                 )
 
-                # Event kaçırmamak için last_block
-                # değiştirilmez.
                 time.sleep(5)
 
             except Exception as exc:
