@@ -7,48 +7,13 @@ from config import RPC_URL, LAUNCHER_FACTORY
 LAUNCH_CREATED_ABI = [{
     "anonymous": False,
     "inputs": [
-        {
-            "indexed": True,
-            "internalType": "address",
-            "name": "creator",
-            "type": "address",
-        },
-        {
-            "indexed": False,
-            "internalType": "address",
-            "name": "token",
-            "type": "address",
-        },
-        {
-            "indexed": False,
-            "internalType": "address",
-            "name": "launch",
-            "type": "address",
-        },
-        {
-            "indexed": False,
-            "internalType": "string",
-            "name": "name",
-            "type": "string",
-        },
-        {
-            "indexed": False,
-            "internalType": "string",
-            "name": "symbol",
-            "type": "string",
-        },
-        {
-            "indexed": False,
-            "internalType": "string",
-            "name": "metadataURI",
-            "type": "string",
-        },
-        {
-            "indexed": False,
-            "internalType": "string",
-            "name": "imageURI",
-            "type": "string",
-        },
+        {"indexed": True, "internalType": "address", "name": "creator", "type": "address"},
+        {"indexed": False, "internalType": "address", "name": "token", "type": "address"},
+        {"indexed": False, "internalType": "address", "name": "launch", "type": "address"},
+        {"indexed": False, "internalType": "string", "name": "name", "type": "string"},
+        {"indexed": False, "internalType": "string", "name": "symbol", "type": "string"},
+        {"indexed": False, "internalType": "string", "name": "metadataURI", "type": "string"},
+        {"indexed": False, "internalType": "string", "name": "imageURI", "type": "string"},
     ],
     "name": "LaunchCreated",
     "type": "event",
@@ -68,12 +33,19 @@ def main():
     )
 
     if not w3.is_connected():
-        raise RuntimeError("RPC baglantisi kurulamadi.")
+        print("RPC BAGLANTI HATASI")
+        return
+
+    chain_id = w3.eth.chain_id
 
     print(f"RPC OK")
-    print(f"Chain ID : {w3.eth.chain_id}")
+    print(f"Chain ID : {chain_id}")
     print(f"Latest   : {w3.eth.block_number}")
     print()
+
+    if chain_id != 4663:
+        print("UYARI: Chain ID 4663 degil!")
+        return
 
     factory_address = Web3.to_checksum_address(LAUNCHER_FACTORY)
 
@@ -85,28 +57,20 @@ def main():
         text="LaunchCreated(address,address,address,string,string,string,string)"
     ).hex()
 
-    print(f"LaunchCreated topic:")
+    print("LaunchCreated topic:")
     print(event_signature)
     print()
 
-    factory = w3.eth.contract(
-        address=factory_address,
-        abi=LAUNCH_CREATED_ABI,
-    )
-
     # ---------------------------------------------------------
-    # TEST ICIN BURAYA CLOCKIN'IN BLOCK NUMARASINI YAZACAĞIZ.
+    # CLOCKIN'IN GERCEK BLOCK NUMARASINI BURAYA YAZACAGIZ
     # ---------------------------------------------------------
     TEST_BLOCK = None
 
     if TEST_BLOCK is None:
-        print("TEST_BLOCK henuz girilmedi.")
+        print("TEST_BLOCK = None")
         print()
-        print("Once CLOCKIN launch transaction/block numarasini")
-        print("belirlememiz gerekiyor.")
-        print()
-        print("Ornek:")
-        print("TEST_BLOCK = 33630000")
+        print("CLOCKIN launch transaction/block numarasini")
+        print("buldugumuzda sadece TEST_BLOCK degerini girecegiz.")
         return
 
     print(f"Test block : {TEST_BLOCK}")
@@ -128,12 +92,19 @@ def main():
     print()
 
     if not logs:
-        print("SONUC: BU FACTORY'DE EVENT YOK.")
+        print("=" * 60)
+        print("KESIN SONUC")
+        print("=" * 60)
+        print("LaunchCreated = YOK")
         print()
-        print("Bu durumda CLOCKIN launch'i bizim dinledigimiz")
-        print("Factory + LaunchCreated event'i uzerinden")
-        print("olusturulmamis olabilir.")
+        print("Bu block'ta bizim Factory'den")
+        print("LaunchCreated event'i bulunmuyor.")
         return
+
+    factory = w3.eth.contract(
+        address=factory_address,
+        abi=LAUNCH_CREATED_ABI,
+    )
 
     for index, raw_log in enumerate(logs, start=1):
 
@@ -162,12 +133,10 @@ def main():
             print("=" * 60)
             print("Factory + LaunchCreated = TRUE")
             print()
-            print("Radar'in dinledigi event GERCEK.")
-            print("Bir sonraki adim filter/Telegram zincirini")
-            print("test etmek olacak.")
+            print("Radar'in dinledigi event dogrulandi.")
 
         except Exception as exc:
-            print(f"EVENT DECODE ERROR: {exc}")
+            print(f"DECODE ERROR: {exc}")
 
 
 if __name__ == "__main__":
