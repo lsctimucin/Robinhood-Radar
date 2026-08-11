@@ -1,15 +1,8 @@
 # Patoshi Radar keyword set, adapted for Robinhood Radar.
 KEYWORDS = [
-    "patoshi",
-    "pat",
-    "turan",
-    "pato",
-    "patos",
-    "enes",
-    "parad",
-    "paradot",
-    "paradotor",
-    "patosh",
+    "clock",
+    "clo",
+    "clockin",
 ]
 
 def find_keyword_matches(name: str, symbol: str):
