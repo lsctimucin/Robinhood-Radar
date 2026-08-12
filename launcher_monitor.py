@@ -1,312 +1,275 @@
 import time
-import requests
 
-from config import POLL_SECONDS
+from web3 import Web3
+from web3.exceptions import Web3Exception
+
+from config import (
+    RPC_URL,
+    LAUNCHER_FACTORY,
+    POLL_SECONDS,
+    BLOCK_BATCH_SIZE,
+)
+
 from filters import find_keyword_matches
 
 
-BOARD_URL = "https://hood.fun/api/board"
-
-REQUEST_TIMEOUT = 10
-RETRY_SECONDS = 5
+LAUNCH_CREATED_ABI = [
+    {
+        "anonymous": False,
+        "inputs": [
+            {
+                "indexed": True,
+                "internalType": "address",
+                "name": "creator",
+                "type": "address",
+            },
+            {
+                "indexed": False,
+                "internalType": "address",
+                "name": "token",
+                "type": "address",
+            },
+            {
+                "indexed": False,
+                "internalType": "address",
+                "name": "launch",
+                "type": "address",
+            },
+            {
+                "indexed": False,
+                "internalType": "string",
+                "name": "name",
+                "type": "string",
+            },
+            {
+                "indexed": False,
+                "internalType": "string",
+                "name": "symbol",
+                "type": "string",
+            },
+            {
+                "indexed": False,
+                "internalType": "string",
+                "name": "metadataURI",
+                "type": "string",
+            },
+            {
+                "indexed": False,
+                "internalType": "string",
+                "name": "imageURI",
+                "type": "string",
+            },
+        ],
+        "name": "LaunchCreated",
+        "type": "event",
+    }
+]
 
 
 class LauncherMonitor:
 
     def __init__(self, on_match):
+        self.w3 = Web3(
+            Web3.HTTPProvider(
+                RPC_URL,
+                request_kwargs={"timeout": 10},
+            )
+        )
+
+        self.factory_address = Web3.to_checksum_address(
+            LAUNCHER_FACTORY
+        )
+
+        self.factory = self.w3.eth.contract(
+            address=self.factory_address,
+            abi=LAUNCH_CREATED_ABI,
+        )
+
         self.on_match = on_match
-        self.seen_tokens = set()
+        self.last_block = None
 
-    def _fetch_board(self):
-        response = requests.get(
-            BOARD_URL,
-            timeout=REQUEST_TIMEOUT,
-            headers={
-                "User-Agent": "Robinhood-Radar/1.0",
-                "Accept": "application/json",
-            },
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        if not isinstance(data, dict):
-            raise ValueError(
-                "Hood API beklenmeyen veri döndürdü."
+        # LaunchCreated(
+        #   address,
+        #   address,
+        #   address,
+        #   string,
+        #   string,
+        #   string,
+        #   string
+        # )
+        self.event_signature = Web3.keccak(
+            text=(
+                "LaunchCreated("
+                "address,address,address,"
+                "string,string,string,string"
+                ")"
             )
+        ).hex()
 
-        tokens = data.get("tokens", [])
-
-        if not isinstance(tokens, list):
-            raise ValueError(
-                "Hood API 'tokens' listesi bulunamadı."
+        if not self.event_signature.startswith("0x"):
+            self.event_signature = (
+                "0x" + self.event_signature
             )
-
-        return tokens
-
-    def _detect_platform(self, launchpad):
-        """
-        Launchpad alanından platformu belirler.
-
-        Önemli:
-        Bu monitorün veri kaynağı hood.fun API olduğu için
-        bilinmeyen launchpadleri otomatik olarak hood.fun
-        kabul etmiyoruz.
-        """
-
-        value = str(
-            launchpad or ""
-        ).strip().lower()
-
-        if not value:
-            return "UNKNOWN"
-
-        if "hood" in value:
-            return "HOOD.FUN"
-
-        if "stonk" in value:
-            return "STONKBROKERS"
-
-        return str(launchpad)
-
-    def _normalize_token(self, token):
-
-        address = token.get(
-            "address",
-            ""
-        )
-
-        creator = token.get(
-            "creator",
-            ""
-        )
-
-        launchpad = token.get(
-            "launchpad",
-            ""
-        )
-
-        name = token.get(
-            "name",
-            ""
-        ) or ""
-
-        symbol = token.get(
-            "symbol",
-            ""
-        ) or ""
-
-        created_at_block = token.get(
-            "createdAtBlock",
-            ""
-        )
-
-        platform = self._detect_platform(
-            launchpad
-        )
-
-        return {
-            "token": address,
-            "creator": creator,
-            "launch": launchpad,
-            "platform": platform,
-            "name": name,
-            "symbol": symbol,
-            "metadataURI": token.get(
-                "metadataURI",
-                ""
-            ),
-            "imageURI": "",
-            "block": created_at_block,
-            "tx_hash": "",
-        }
-
-    def _token_id(self, token):
-
-        return (
-            token.get("address")
-            or (
-                f"{token.get('name', '')}:"
-                f"{token.get('symbol', '')}:"
-                f"{token.get('createdAtBlock', '')}"
-            )
-        )
 
     def connect_check(self):
+        if not self.w3.is_connected():
+            raise RuntimeError(
+                f"Robinhood RPC baglanamadi: {RPC_URL}"
+            )
+
+        chain_id = self.w3.eth.chain_id
+
+        if chain_id != 4663:
+            raise RuntimeError(
+                f"Yanlis chain ID: {chain_id}, beklenen: 4663"
+            )
+
+        latest = self.w3.eth.block_number
 
         print(
-            "Hood.fun API kontrol ediliyor..."
+            f"Robinhood Chain baglandi | "
+            f"chain_id={chain_id} | "
+            f"block={latest}"
         )
 
-        tokens = self._fetch_board()
+        print(
+            f"Stonk Launcher Factory: "
+            f"{LAUNCHER_FACTORY}"
+        )
 
         print(
-            f"Hood.fun API baglandi | "
-            f"endpoint={BOARD_URL} | "
-            f"tokens={len(tokens)}"
+            f"LaunchCreated topic: "
+            f"{self.event_signature}"
         )
 
         print(
             f"Polling: {POLL_SECONDS}s | "
-            f"Kaynak: Hood.fun /api/board"
+            f"Batch: {BLOCK_BATCH_SIZE} blocks"
         )
 
-    def _initial_snapshot(self, tokens):
-        """
-        Radar ilk açıldığında mevcut coinleri alarm olarak göndermez.
-        Sadece mevcut listeyi hafızaya alır.
-        """
+        print("Stonk Launcher LaunchCreated dinleniyor...")
 
-        for token in tokens:
-
-            token_id = self._token_id(
-                token
-            )
-
-            if token_id:
-                self.seen_tokens.add(
-                    token_id
-                )
-
-        print(
-            f"Ilk snapshot alindi | "
-            f"Mevcut token={len(self.seen_tokens)}"
+    def _get_logs(self, from_block, to_block):
+        return self.w3.eth.get_logs(
+            {
+                "address": self.factory_address,
+                "topics": [self.event_signature],
+                "fromBlock": from_block,
+                "toBlock": to_block,
+            }
         )
 
-    def _process_tokens(self, tokens):
-
-        new_count = 0
-        match_count = 0
-
-        for raw_token in tokens:
-
-            token_id = self._token_id(
-                raw_token
-            )
-
-            if not token_id:
-                continue
-
-            if token_id in self.seen_tokens:
-                continue
-
-            self.seen_tokens.add(
-                token_id
-            )
-
-            new_count += 1
-
-            launch = self._normalize_token(
-                raw_token
-            )
-
-            matches = find_keyword_matches(
-                launch["name"],
-                launch["symbol"],
-            )
-
-            print(
-                f"Yeni coin | "
-                f"{launch['name']} "
-                f"({launch['symbol']}) | "
-                f"platform={launch['platform']} | "
-                f"token={launch['token']}"
-            )
-
-            if matches:
-
-                match_count += 1
-
-                print(
-                    f"KEYWORD MATCH | "
-                    f"{launch['name']} "
-                    f"({launch['symbol']}) | "
-                    f"platform={launch['platform']} | "
-                    f"{matches}"
-                )
-
-                self.on_match(
-                    launch,
-                    matches,
-                )
-
-        return (
-            new_count,
-            match_count
+    def _decode(self, raw_log):
+        event = (
+            self.factory.events.LaunchCreated()
+            .process_log(raw_log)
         )
+
+        args = event["args"]
+
+        return {
+            "creator": args["creator"],
+            "token": args["token"],
+            "launch": args["launch"],
+            "name": args["name"],
+            "symbol": args["symbol"],
+            "metadataURI": args["metadataURI"],
+            "imageURI": args["imageURI"],
+            "block": raw_log["blockNumber"],
+            "tx_hash": raw_log["transactionHash"].hex(),
+        }
 
     def run(self):
-
         self.connect_check()
 
-        tokens = self._fetch_board()
+        self.last_block = self.w3.eth.block_number
 
-        self._initial_snapshot(
-            tokens
+        print(
+            f"Baslangic block: "
+            f"{self.last_block}"
         )
 
         print("=" * 60)
-        print(
-            "ROBINHOOD RADAR AKTIF"
-        )
-        print(
-            "Kaynak: Hood.fun /api/board"
-        )
-        print(
-            "Platform detection: AKTIF"
-        )
-        print(
-            "Alchemy/RPC polling: DISABLED"
-        )
-        print(
-            "LaunchCreated event polling: DISABLED"
-        )
+        print("ROBINHOOD RADAR AKTIF")
+        print("Kaynak: Stonk Launcher")
+        print("Event: LaunchCreated")
+        print("Hood.fun API: KULLANILMIYOR")
+        print("Alchemy/RPC: Sadece yeni bloklarda")
         print("=" * 60)
 
         while True:
-
             try:
+                latest = self.w3.eth.block_number
 
-                tokens = self._fetch_board()
+                if latest > self.last_block:
 
-                (
-                    new_count,
-                    match_count
-                ) = self._process_tokens(
-                    tokens
-                )
+                    start = self.last_block + 1
+
+                    end = min(
+                        start + BLOCK_BATCH_SIZE - 1,
+                        latest,
+                    )
+
+                    logs = self._get_logs(
+                        start,
+                        end,
+                    )
+
+                    print(
+                        f"Block taraniyor: "
+                        f"{start} -> {end} | "
+                        f"LaunchCreated={len(logs)}"
+                    )
+
+                    for raw_log in logs:
+
+                        launch = self._decode(
+                            raw_log
+                        )
+
+                        matches = find_keyword_matches(
+                            launch["name"],
+                            launch["symbol"],
+                        )
+
+                        print(
+                            f"LaunchCreated | "
+                            f"{launch['name']} "
+                            f"({launch['symbol']}) | "
+                            f"creator={launch['creator']} | "
+                            f"token={launch['token']} | "
+                            f"block={launch['block']}"
+                        )
+
+                        if matches:
+
+                            print(
+                                f"KEYWORD MATCH | "
+                                f"{launch['name']} "
+                                f"({launch['symbol']}) | "
+                                f"{matches}"
+                            )
+
+                            self.on_match(
+                                launch,
+                                matches,
+                            )
+
+                    self.last_block = end
+
+                time.sleep(POLL_SECONDS)
+
+            except (
+                Web3Exception,
+                ValueError,
+                ConnectionError,
+            ) as exc:
 
                 print(
-                    f"Board tarandi | "
-                    f"tokens={len(tokens)} | "
-                    f"yeni={new_count} | "
-                    f"match={match_count}"
+                    f"RPC/log hatasi: {exc}"
                 )
 
-                time.sleep(
-                    POLL_SECONDS
-                )
-
-            except requests.RequestException as exc:
-
-                print(
-                    f"Hood API hatasi: {exc}"
-                )
-
-                time.sleep(
-                    RETRY_SECONDS
-                )
-
-            except ValueError as exc:
-
-                print(
-                    f"Board veri hatasi: {exc}"
-                )
-
-                time.sleep(
-                    RETRY_SECONDS
-                )
+                time.sleep(5)
 
             except Exception as exc:
 
@@ -314,6 +277,4 @@ class LauncherMonitor:
                     f"Monitor hatasi: {exc}"
                 )
 
-                time.sleep(
-                    RETRY_SECONDS
-                )
+                time.sleep(5)
