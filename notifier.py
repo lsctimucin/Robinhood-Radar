@@ -1,54 +1,56 @@
-rom html import escape
-
-from config import RADAR_NAME
-from telegram_sender import TelegramSender
+import requests
 
 
-def build_message(launch, matches):
-    name = escape(str(launch.get("name") or "Unknown"))
-    symbol = escape(str(launch.get("symbol") or "-"))
-    token = str(launch.get("token") or "")
-    creator = escape(str(launch.get("creator") or "-"))
-    launch_address = escape(str(launch.get("launch") or "-"))
-    tx_hash = str(launch.get("tx_hash") or "")
-    platform = escape(str(launch.get("platform") or "UNKNOWN"))
-    keyword_text = escape(", ".join(str(x) for x in matches))
+class TelegramSender:
 
-    message = (
-        f"🚨 {escape(str(RADAR_NAME))}\n\n"
-        f"🪙 {name}\n"
-        f"💎 ${symbol}\n\n"
-        f"🌐 Robinhood Chain\n"
-        f"🏭 Platform: {platform}\n"
-        f"🔎 Keyword: {keyword_text}\n\n"
-        f"📜 Token: <code>{escape(token)}</code>\n"
-        f"🚀 Launch: {launch_address}\n"
-        f"👤 Creator: {creator}\n"
-    )
+    def __init__(self, token: str, chat_id: str):
+        self.token = token
+        self.chat_id = chat_id
 
-    if tx_hash:
-        message += (
-            f"🔗 TX: "
-            f"https://robinhoodchain.blockscout.com/tx/{escape(tx_hash)}\n"
+    def send_message(self, text: str) -> bool:
+
+        if not self.token or not self.chat_id:
+            print(
+                "Telegram ayarlari eksik: "
+                "BOT_TOKEN / CHAT_ID"
+            )
+            return False
+
+        url = (
+            f"https://api.telegram.org/"
+            f"bot{self.token}/sendMessage"
         )
 
-    if token:
-        message += (
-            f"📊 Token: "
-            f"https://robinhoodchain.blockscout.com/address/{escape(token)}"
-        )
+        try:
 
-    return message
+            response = requests.post(
+                url,
+                json={
+                    "chat_id": self.chat_id,
+                    "text": text,
+                    "disable_web_page_preview": True,
+                },
+                timeout=15,
+            )
 
+            if response.ok:
 
-def make_notifier(sender: TelegramSender):
-    def notify(launch, matches):
-        message = build_message(launch, matches)
+                print("Telegram: OK")
 
-        print("\n" + "=" * 60)
-        print(message)
-        print("=" * 60 + "\n")
+                return True
 
-        sender.send_message(message)
+            print(
+                f"Telegram: "
+                f"{response.status_code} "
+                f"{response.text}"
+            )
 
-    return notify
+            return False
+
+        except Exception as exc:
+
+            print(
+                f"Telegram exception: {exc}"
+            )
+
+            return False
