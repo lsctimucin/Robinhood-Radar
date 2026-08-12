@@ -1,5 +1,6 @@
 import requests
 
+
 class TelegramSender:
     def __init__(self, token: str, chat_id: str):
         self.token = token
@@ -18,16 +19,19 @@ class TelegramSender:
                 json={
                     "chat_id": self.chat_id,
                     "text": text,
+                    "parse_mode": "HTML",
                     "disable_web_page_preview": True,
                 },
                 timeout=15,
             )
+
             if response.ok:
                 print("Telegram: OK")
                 return True
 
             print(f"Telegram: {response.status_code} {response.text}")
             return False
+
         except Exception as exc:
             print(f"Telegram exception: {exc}")
             return False
