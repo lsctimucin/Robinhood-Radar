@@ -13,6 +13,10 @@ from config import (
 from filters import find_keyword_matches
 
 
+# ============================================================
+# STONK LAUNCHER - LaunchCreated EVENT
+# ============================================================
+
 LAUNCH_CREATED_ABI = [
     {
         "anonymous": False,
@@ -69,10 +73,14 @@ LAUNCH_CREATED_ABI = [
 class LauncherMonitor:
 
     def __init__(self, on_match):
+        self.on_match = on_match
+
         self.w3 = Web3(
             Web3.HTTPProvider(
                 RPC_URL,
-                request_kwargs={"timeout": 10},
+                request_kwargs={
+                    "timeout": 10
+                },
             )
         )
 
@@ -85,18 +93,10 @@ class LauncherMonitor:
             abi=LAUNCH_CREATED_ABI,
         )
 
-        self.on_match = on_match
         self.last_block = None
 
-        # LaunchCreated(
-        #   address,
-        #   address,
-        #   address,
-        #   string,
-        #   string,
-        #   string,
-        #   string
-        # )
+        self.processed_transactions = set()
+
         self.event_signature = Web3.keccak(
             text=(
                 "LaunchCreated("
@@ -106,12 +106,12 @@ class LauncherMonitor:
             )
         ).hex()
 
-        if not self.event_signature.startswith("0x"):
-            self.event_signature = (
-                "0x" + self.event_signature
-            )
+    # ========================================================
+    # CONNECTION CHECK
+    # ========================================================
 
     def connect_check(self):
+
         if not self.w3.is_connected():
             raise RuntimeError(
                 f"Robinhood RPC baglanamadi: {RPC_URL}"
@@ -121,19 +121,20 @@ class LauncherMonitor:
 
         if chain_id != 4663:
             raise RuntimeError(
-                f"Yanlis chain ID: {chain_id}, beklenen: 4663"
+                f"Yanlis chain ID: {chain_id} "
+                f"| Beklenen: 4663"
             )
 
-        latest = self.w3.eth.block_number
+        latest_block = self.w3.eth.block_number
 
         print(
             f"Robinhood Chain baglandi | "
             f"chain_id={chain_id} | "
-            f"block={latest}"
+            f"block={latest_block}"
         )
 
         print(
-            f"Stonk Launcher Factory: "
+            f"Launcher Factory: "
             f"{LAUNCHER_FACTORY}"
         )
 
@@ -147,21 +148,41 @@ class LauncherMonitor:
             f"Batch: {BLOCK_BATCH_SIZE} blocks"
         )
 
-        print("Stonk Launcher LaunchCreated dinleniyor...")
+        print(
+            "Stonk Launcher LaunchCreated "
+            "event monitoru hazir."
+        )
 
-    def _get_logs(self, from_block, to_block):
+    # ========================================================
+    # LOG FETCH
+    # ========================================================
+
+    def _get_logs(
+        self,
+        from_block,
+        to_block,
+    ):
+
         return self.w3.eth.get_logs(
             {
                 "address": self.factory_address,
-                "topics": [self.event_signature],
+                "topics": [
+                    self.event_signature
+                ],
                 "fromBlock": from_block,
                 "toBlock": to_block,
             }
         )
 
-    def _decode(self, raw_log):
+    # ========================================================
+    # EVENT DECODE
+    # ========================================================
+
+    def _decode_launch(self, raw_log):
+
         event = (
-            self.factory.events.LaunchCreated()
+            self.factory.events
+            .LaunchCreated()
             .process_log(raw_log)
         )
 
@@ -176,13 +197,76 @@ class LauncherMonitor:
             "metadataURI": args["metadataURI"],
             "imageURI": args["imageURI"],
             "block": raw_log["blockNumber"],
-            "tx_hash": raw_log["transactionHash"].hex(),
+            "tx_hash": raw_log[
+                "transactionHash"
+            ].hex(),
         }
 
+    # ========================================================
+    # PROCESS EVENT
+    # ========================================================
+
+    def _process_launch(self, raw_log):
+
+        tx_hash = raw_log[
+            "transactionHash"
+        ].hex()
+
+        if tx_hash in self.processed_transactions:
+            return False
+
+        self.processed_transactions.add(
+            tx_hash
+        )
+
+        launch = self._decode_launch(
+            raw_log
+        )
+
+        name = launch["name"]
+        symbol = launch["symbol"]
+
+        print(
+            f"LaunchCreated | "
+            f"{name} ({symbol}) | "
+            f"creator={launch['creator']} | "
+            f"token={launch['token']} | "
+            f"launch={launch['launch']} | "
+            f"block={launch['block']}"
+        )
+
+        matches = find_keyword_matches(
+            name,
+            symbol,
+        )
+
+        if not matches:
+            return False
+
+        print(
+            f"KEYWORD MATCH | "
+            f"{name} ({symbol}) | "
+            f"matches={matches}"
+        )
+
+        self.on_match(
+            launch,
+            matches,
+        )
+
+        return True
+
+    # ========================================================
+    # MAIN LOOP
+    # ========================================================
+
     def run(self):
+
         self.connect_check()
 
-        self.last_block = self.w3.eth.block_number
+        self.last_block = (
+            self.w3.eth.block_number
+        )
 
         print(
             f"Baslangic block: "
@@ -191,73 +275,80 @@ class LauncherMonitor:
 
         print("=" * 60)
         print("ROBINHOOD RADAR AKTIF")
-        print("Kaynak: Stonk Launcher")
-        print("Event: LaunchCreated")
-        print("Hood.fun API: KULLANILMIYOR")
-        print("Alchemy/RPC: Sadece yeni bloklarda")
+        print(
+            "Kaynak: Stonk Launcher"
+        )
+        print(
+            f"Factory: {LAUNCHER_FACTORY}"
+        )
+        print(
+            "Event: LaunchCreated"
+        )
+        print(
+            "Hood.fun API: DISABLED"
+        )
+        print(
+            "Alchemy/RPC polling: "
+            "SADECE EVENT KONTROLU"
+        )
         print("=" * 60)
 
         while True:
+
             try:
-                latest = self.w3.eth.block_number
 
-                if latest > self.last_block:
+                latest_block = (
+                    self.w3.eth.block_number
+                )
 
-                    start = self.last_block + 1
+                if latest_block > self.last_block:
 
-                    end = min(
-                        start + BLOCK_BATCH_SIZE - 1,
-                        latest,
+                    from_block = (
+                        self.last_block + 1
+                    )
+
+                    to_block = min(
+                        from_block
+                        + BLOCK_BATCH_SIZE
+                        - 1,
+                        latest_block,
                     )
 
                     logs = self._get_logs(
-                        start,
-                        end,
+                        from_block,
+                        to_block,
                     )
 
                     print(
                         f"Block taraniyor: "
-                        f"{start} -> {end} | "
-                        f"LaunchCreated={len(logs)}"
+                        f"{from_block} -> "
+                        f"{to_block} | "
+                        f"LaunchCreated="
+                        f"{len(logs)}"
                     )
 
                     for raw_log in logs:
 
-                        launch = self._decode(
-                            raw_log
-                        )
+                        try:
 
-                        matches = find_keyword_matches(
-                            launch["name"],
-                            launch["symbol"],
-                        )
+                            self._process_launch(
+                                raw_log
+                            )
 
-                        print(
-                            f"LaunchCreated | "
-                            f"{launch['name']} "
-                            f"({launch['symbol']}) | "
-                            f"creator={launch['creator']} | "
-                            f"token={launch['token']} | "
-                            f"block={launch['block']}"
-                        )
-
-                        if matches:
+                        except Exception as exc:
 
                             print(
-                                f"KEYWORD MATCH | "
-                                f"{launch['name']} "
-                                f"({launch['symbol']}) | "
-                                f"{matches}"
+                                "Launch event "
+                                f"parse hatasi: {exc}"
                             )
 
-                            self.on_match(
-                                launch,
-                                matches,
-                            )
+                    self.last_block = (
+                        to_block
+                    )
 
-                    self.last_block = end
-
-                time.sleep(POLL_SECONDS)
+                time.sleep(
+                    POLL_SECONDS
+                )
 
             except (
                 Web3Exception,
