@@ -94,10 +94,10 @@ class LauncherMonitor:
         )
 
         self.last_block = None
-
         self.processed_transactions = set()
 
-        self.event_signature = Web3.keccak(
+        # RPC'nin istediği 0x prefix'i garanti ediyoruz.
+        topic = Web3.keccak(
             text=(
                 "LaunchCreated("
                 "address,address,address,"
@@ -105,6 +105,11 @@ class LauncherMonitor:
                 ")"
             )
         ).hex()
+
+        if not topic.startswith("0x"):
+            topic = "0x" + topic
+
+        self.event_signature = topic
 
     # ========================================================
     # CONNECTION CHECK
@@ -121,8 +126,8 @@ class LauncherMonitor:
 
         if chain_id != 4663:
             raise RuntimeError(
-                f"Yanlis chain ID: {chain_id} "
-                f"| Beklenen: 4663"
+                f"Yanlis chain ID: {chain_id} | "
+                f"Beklenen: 4663"
             )
 
         latest_block = self.w3.eth.block_number
@@ -148,20 +153,11 @@ class LauncherMonitor:
             f"Batch: {BLOCK_BATCH_SIZE} blocks"
         )
 
-        print(
-            "Stonk Launcher LaunchCreated "
-            "event monitoru hazir."
-        )
-
     # ========================================================
     # LOG FETCH
     # ========================================================
 
-    def _get_logs(
-        self,
-        from_block,
-        to_block,
-    ):
+    def _get_logs(self, from_block, to_block):
 
         return self.w3.eth.get_logs(
             {
@@ -219,6 +215,13 @@ class LauncherMonitor:
             tx_hash
         )
 
+        # Hafiza gereksiz buyumesin.
+        if len(self.processed_transactions) > 10000:
+            self.processed_transactions.clear()
+            self.processed_transactions.add(
+                tx_hash
+            )
+
         launch = self._decode_launch(
             raw_log
         )
@@ -275,18 +278,12 @@ class LauncherMonitor:
 
         print("=" * 60)
         print("ROBINHOOD RADAR AKTIF")
-        print(
-            "Kaynak: Stonk Launcher"
-        )
+        print("Kaynak: Stonk Launcher")
         print(
             f"Factory: {LAUNCHER_FACTORY}"
         )
-        print(
-            "Event: LaunchCreated"
-        )
-        print(
-            "Hood.fun API: DISABLED"
-        )
+        print("Event: LaunchCreated")
+        print("Hood.fun API: DISABLED")
         print(
             "Alchemy/RPC polling: "
             "SADECE EVENT KONTROLU"
@@ -342,9 +339,7 @@ class LauncherMonitor:
                                 f"parse hatasi: {exc}"
                             )
 
-                    self.last_block = (
-                        to_block
-                    )
+                    self.last_block = to_block
 
                 time.sleep(
                     POLL_SECONDS
